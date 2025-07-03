@@ -73,7 +73,7 @@ def extract_and_plot_selected(text, selected_indices, selected_scales):
         geocoded_locations = gmaps_extractor.maps_geocode(filtered_locations)
         # Prepare Plotly map
         if not geocoded_locations:
-            return go.Figure()
+            return go.Figure(), []
         lats = [loc["lat"] for loc in geocoded_locations]
         lngs = [loc["lng"] for loc in geocoded_locations]
         names = [loc["name"] for loc in geocoded_locations]
@@ -88,8 +88,9 @@ def extract_and_plot_selected(text, selected_indices, selected_scales):
                 lon=lngs,
                 mode="markers",
                 marker=go.scattermapbox.Marker(size=10),
-                hoverinfo="text",
-                hovertemplate="<b>Name</b>: %{customdata[0]}<br><b>Text Reference</b>: %{customdata[1]}<br><b>Confidence</b>: %{customdata[2]}<br><b>Scale</b>: %{customdata[3]}",
+                name="",
+                hoverinfo="skip",
+                hovertemplate="<b>Name</b>: %{customdata[0]}<br><b>Confidence</b>: %{customdata[2]}<br><b>Scale</b>: %{customdata[3]}",
             )
         )
         fig.update_layout(
@@ -104,7 +105,17 @@ def extract_and_plot_selected(text, selected_indices, selected_scales):
                 zoom=2,
             ),
         )
-        return fig
+        # Prepare locations list for display (ordered by mention)
+        locations_list = [
+            {
+                "Name": loc["name"],
+                "Text Reference": loc["text_reference"],
+                "Confidence": loc["confidence"],
+                "Scale": loc["scale"]
+            }
+            for loc in geocoded_locations
+        ]
+        return fig, locations_list
 
     return asyncio.get_event_loop().run_until_complete(pipeline(selected_chunks))
 
@@ -120,10 +131,29 @@ def chapter_scale_ui():
             label="Select Chapters/Chunks to Process", choices=[], interactive=True
         )
         scale_select = gr.CheckboxGroup(
-            label="Select Scales to Include", choices=["country", "state", "city", "neighborhood", "landmark", "other"], value=[ "neighborhood", "landmark", "other"], interactive=True
+            label="Select Scales to Include",
+            choices=[
+                "country",
+                "state",
+                "city",
+                "neighborhood",
+                "landmark",
+                "building",
+                "other",
+            ],
+            value=["neighborhood", "landmark", "building", "other"],
+            interactive=True,
         )
         gr.Markdown("""# Step 2: Extract & Map Locations for Selected Chapters and Scales""")
         map_plot = gr.Plot()
+        locations_table = gr.Dataframe(
+            headers=["Name", "Text Reference", "Confidence", "Scale"],
+            datatype=["str", "str", "number", "str"],
+            label="Locations (in order of mention)",
+            interactive=False,
+            visible=True,
+            wrap=True
+        )
         extract_btn = gr.Button("Extract & Map Locations")
 
         # Prepare chapter labels with preview
@@ -150,14 +180,18 @@ def chapter_scale_ui():
             outputs=[num_chapters, num_chunks, chapter_select],
         )
 
+        def extract_callback(text, selected, scales):
+            info = analyze_chapters(text)
+            indices = [get_chapter_labels(info).index(s) for s in selected]
+            fig, locations_list = extract_and_plot_selected(text, indices, scales)
+            # Convert list of dicts to list of lists for Dataframe
+            table_data = [[loc["Name"], loc["Text Reference"], loc["Confidence"], loc["Scale"]] for loc in locations_list]
+            return fig, table_data
+
         extract_btn.click(
-            lambda text, selected, scales: (
-                lambda info: extract_and_plot_selected(
-                    text, [get_chapter_labels(info).index(s) for s in selected], scales
-                )
-            )(analyze_chapters(text)),
+            extract_callback,
             inputs=[text_input, chapter_select, scale_select],
-            outputs=map_plot,
+            outputs=[map_plot, locations_table],
         )
 
         # Make chapter_select scrollable
