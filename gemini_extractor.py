@@ -180,59 +180,38 @@ class UserInterface:
         print("(Note: Gradio cannot display interactive Google Maps. Use your browser for full interactivity.)")
 
 # --- MAIN PIPELINE ---
-async def main_pipeline():
-    # Sample book text (replace with file reading as needed)
-    sample_book_text = """
-    Chapter 1: The Journey Begins
-    Sarah stepped off the plane at Charles de Gaulle Airport, the humid Parisian air hitting her face. 
-    She had always dreamed of seeing the City of Light. After taking the RER train into the city, 
-    she found herself standing before the iconic iron tower that Gustave Eiffel had built for the 1889 World's Fair.
-    The next morning, she crossed the famous bridge over the Seine to visit the world's largest art museum, 
-    where Leonardo's masterpiece smiled enigmatically from behind bulletproof glass.
-    Chapter 2: Across the Channel
-    Three days later, Sarah took the Eurostar through the tunnel beneath the English Channel. 
-    London greeted her with its typical drizzle. She walked from St. Pancras to the Thames, 
-    where the famous clock tower chimed noon. The Gothic revival palace nearby housed the British Parliament.
-    Chapter 3: Germanic Adventures
-    Her final destination was the German capital. Walking through the Brandenburg Gate, 
-    she remembered the wall that once divided this city. Near Potsdamer Platz, she climbed 
-    the victory column topped with the golden winged figure locals call "Goldelse."
+
+def extract_and_geocode_locations(chunks: List[str], selected_scales: List[str]) -> List[Dict[str, Any]]:
     """
-    # 1. Preprocess text
-    preprocessor = TextPreprocessor()
-    chunks = preprocessor.chunk(sample_book_text, method="chapter")
-    print(f"📚 Split text into {len(chunks)} chunks")
-    # 2. Extract locations
-    gemini_extractor = GeminiExtractor(gemini_api_key=GEMINI_API_KEY)
-    all_locations = await gemini_extractor.process_all_chunks(chunks)
-    print(f"\n📍 Extracted {len(all_locations)} location mentions")
-    # 3. Deduplicate
-    def simple_deduplicate(locations: List[LocationMention]) -> List[LocationMention]:
-        seen = {}
-        deduped = []
-        for loc in locations:
+    Given a list of text chunks and selected scales, extract locations, deduplicate, filter by scale, geocode, and return geocoded location dicts.
+    Synchronous wrapper for Gradio UI.
+    Deduplication: same places (by name, case-insensitive) are merged, text references concatenated, and highest confidence kept.
+    """
+    async def pipeline():
+        gemini_extractor = GeminiExtractor(gemini_api_key=GEMINI_API_KEY)
+        all_locations = []
+        for idx, chunk in enumerate(chunks):
+            locs = await gemini_extractor.extract_locations_from_chunk(chunk, idx)
+            all_locations.extend(locs)
+        # Deduplicate by name (case-insensitive), concatenate text references, keep highest confidence
+        deduped = {}
+        for loc in all_locations:
             key = loc.name.lower().strip()
-            if key not in seen:
-                seen[key] = loc
-                deduped.append(loc)
+            if key not in deduped:
+                deduped[key] = loc
             else:
-                seen[key].confidence = max(seen[key].confidence, loc.confidence)
-        return deduped
-    unique_locations = simple_deduplicate(all_locations)
-    print(f"📍 After deduplication: {len(unique_locations)} unique locations")
-    # 4. Geocode
-    gmaps_extractor = GoogleMapsExtractor(api_key=GOOGLE_MAPS_KEY)
-    geocoded_locations = gmaps_extractor.maps_geocode(unique_locations)
-    print(f"🗺️  Successfully geocoded {len(geocoded_locations)} locations")
-    # 5. Export and display
-    map_html = gmaps_extractor.create_map_html(geocoded_locations)
-    ui = UserInterface()
-    ui.launch_interface(map_html, geocoded_locations)
-    # Optionally export list
-    with open("debug_results.json", "w") as f:
-        f.write(gmaps_extractor.export_gmaps_list(geocoded_locations))
-    print("💾 Results saved to debug_results.json")
-    print("✅ Pipeline complete!")
+                # Concatenate text references
+                deduped[key].text_reference += ", " + loc.text_reference
+                # Keep highest confidence
+                deduped[key].confidence = max(deduped[key].confidence, loc.confidence)
+        unique_locations = list(deduped.values())
+        # Filter by selected scales
+        filtered_locations = [loc for loc in unique_locations if loc.scale in selected_scales]
+        # Geocode
+        gmaps_extractor = GoogleMapsExtractor(api_key=GOOGLE_MAPS_KEY)
+        geocoded_locations = gmaps_extractor.maps_geocode(filtered_locations)
+        return geocoded_locations
+    return asyncio.run(pipeline())
 
 if __name__ == "__main__":
-    asyncio.run(main_pipeline())
+    pass

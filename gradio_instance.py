@@ -8,25 +8,13 @@ from gemini_extractor import (
     GEMINI_API_KEY,
     GOOGLE_MAPS_KEY,
     LocationMention,
+    extract_and_geocode_locations,
 )
 from typing import List
 import nest_asyncio
 
 nest_asyncio.apply()
 import gradio as gr
-
-# Helper: deduplicate locations by name
-def simple_deduplicate(locations: List[LocationMention]) -> List[LocationMention]:
-    seen = {}
-    deduped = []
-    for loc in locations:
-        key = loc.name.lower().strip()
-        if key not in seen:
-            seen[key] = loc
-            deduped.append(loc)
-        else:
-            seen[key].confidence = max(seen[key].confidence, loc.confidence)
-    return deduped
 
 # Step 1: Analyze chapters/chunks
 def analyze_chapters(text):
@@ -55,69 +43,46 @@ def analyze_chapters(text):
             "chunks": chunks,
         }
 
-# Step 2: Extract and plot only selected chapters/chunks and scales
-def extract_and_plot_selected(text, selected_indices, selected_scales):
-    info = analyze_chapters(text)
-    selected_chunks = [info["chunks"][i] for i in selected_indices]
-
-    async def pipeline(chunks):
-        gemini_extractor = GeminiExtractor(gemini_api_key=GEMINI_API_KEY)
-        all_locations = []
-        for idx, chunk in enumerate(chunks):
-            locs = await gemini_extractor.extract_locations_from_chunk(chunk, idx)
-            all_locations.extend(locs)
-        unique_locations = simple_deduplicate(all_locations)
-        # Filter by selected scales
-        filtered_locations = [loc for loc in unique_locations if loc.scale in selected_scales]
-        gmaps_extractor = GoogleMapsExtractor(api_key=GOOGLE_MAPS_KEY)
-        geocoded_locations = gmaps_extractor.maps_geocode(filtered_locations)
-        # Prepare Plotly map
-        if not geocoded_locations:
-            return go.Figure(), []
-        lats = [loc["lat"] for loc in geocoded_locations]
-        lngs = [loc["lng"] for loc in geocoded_locations]
-        names = [loc["name"] for loc in geocoded_locations]
-        text_refs = [loc["text_reference"] for loc in geocoded_locations]
-        confidences = [loc["confidence"] for loc in geocoded_locations]
-        scales = [loc["scale"] for loc in geocoded_locations]
-        customdata = list(zip(names, text_refs, confidences, scales))
-        fig = go.Figure(
-            go.Scattermapbox(
-                customdata=customdata,
-                lat=lats,
-                lon=lngs,
-                mode="markers",
-                marker=go.scattermapbox.Marker(size=10),
-                name="",
-                hoverinfo="skip",
-                hovertemplate="<b>Name</b>: %{customdata[0]}<br><b>Confidence</b>: %{customdata[2]}<br><b>Scale</b>: %{customdata[3]}",
-            )
+def map_and_table_from_geocoded_locations(geocoded_locations):
+    if not geocoded_locations:
+        return go.Figure(), []
+    lats = [loc["lat"] for loc in geocoded_locations]
+    lngs = [loc["lng"] for loc in geocoded_locations]
+    names = [loc["name"] for loc in geocoded_locations]
+    text_refs = [loc["text_reference"] for loc in geocoded_locations]
+    confidences = [loc["confidence"] for loc in geocoded_locations]
+    scales = [loc["scale"] for loc in geocoded_locations]
+    customdata = list(zip(names, text_refs, confidences, scales))
+    fig = go.Figure(
+        go.Scattermapbox(
+            customdata=customdata,
+            lat=lats,
+            lon=lngs,
+            mode="markers",
+            marker=go.scattermapbox.Marker(size=10),
+            name="",
+            hoverinfo="skip",
+            hovertemplate="<b>Name</b>: %{customdata[0]}<br><b>Confidence</b>: %{customdata[2]}<br><b>Scale</b>: %{customdata[3]}",
         )
-        fig.update_layout(
-            mapbox_style="open-street-map",
-            hovermode="closest",
-            mapbox=dict(
-                bearing=0,
-                center=go.layout.mapbox.Center(
-                    lat=sum(lats) / len(lats), lon=sum(lngs) / len(lngs)
-                ),
-                pitch=0,
-                zoom=2,
+    )
+    fig.update_layout(
+        mapbox_style="open-street-map",
+        hovermode="closest",
+        mapbox=dict(
+            bearing=0,
+            center=go.layout.mapbox.Center(
+                lat=sum(lats) / len(lats), lon=sum(lngs) / len(lngs)
             ),
-        )
-        # Prepare locations list for display (ordered by mention)
-        locations_list = [
-            {
-                "Name": loc["name"],
-                "Text Reference": loc["text_reference"],
-                "Confidence": loc["confidence"],
-                "Scale": loc["scale"]
-            }
-            for loc in geocoded_locations
-        ]
-        return fig, locations_list
-
-    return asyncio.get_event_loop().run_until_complete(pipeline(selected_chunks))
+            pitch=0,
+            zoom=2,
+        ),
+    )
+    # Prepare locations list for display (ordered by mention)
+    locations_list = [
+        [loc["name"], loc["text_reference"], loc["confidence"], loc["scale"]]
+        for loc in geocoded_locations
+    ]
+    return fig, locations_list
 
 # Gradio UI: Two-step process
 def chapter_scale_ui():
@@ -183,9 +148,9 @@ def chapter_scale_ui():
         def extract_callback(text, selected, scales):
             info = analyze_chapters(text)
             indices = [get_chapter_labels(info).index(s) for s in selected]
-            fig, locations_list = extract_and_plot_selected(text, indices, scales)
-            # Convert list of dicts to list of lists for Dataframe
-            table_data = [[loc["Name"], loc["Text Reference"], loc["Confidence"], loc["Scale"]] for loc in locations_list]
+            selected_chunks = [info["chunks"][i] for i in indices]
+            geocoded_locations = extract_and_geocode_locations(selected_chunks, scales)
+            fig, table_data = map_and_table_from_geocoded_locations(geocoded_locations)
             return fig, table_data
 
         extract_btn.click(
