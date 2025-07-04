@@ -8,6 +8,7 @@ import os
 import google.generativeai as genai
 import googlemaps
 import gradio
+import re
 from my_keys import GEMINI_API_KEY, GOOGLE_MAPS_KEY, MASTER_PROMPT
 
 USE_GEMINI = True  # Set to False to use OpenRouter (TODO) instead 
@@ -22,41 +23,82 @@ class LocationMention:
     model_used: str
     scale: str
 
+
+
 class TextPreprocessor:
-    """Splits input text into chunks by chapter or by max words."""
-    def __init__(self, max_words: int = 4000, chapter_keywords: Optional[List[str]] = None):
-        self.max_words = max_words
-        self.chapter_keywords = chapter_keywords or ["chapter ", "prologue", "epilogue"]
+    DEFAULT_CHAPTER_PATTERNS = [
+        r"^Chapter\s+\d+\b",
+        r"^Section\s+\d+\b",
+        r"^Part\s+[IVXLC]+\b",
+        r"^CHAPTER\s+[A-Z]+\b",
+        r"^Prologue\b",
+        r"^Epilogue\b",
+        r"^Introduction\b",
+    ]
 
-    def split_by_chapter(self, text: str) -> List[str]:
-        import re
-        # Split on chapter keywords (case-insensitive)
-        pattern = r'(?i)(' + '|'.join(map(re.escape, self.chapter_keywords)) + r')'
-        splits = re.split(pattern, text)
-        # Recombine so each chunk starts with the chapter keyword
+    def __init__(self, chunk_size=1500, overlap=300, chapter_patterns=None):
+        self.chunk_size = chunk_size
+        self.overlap = overlap
+        self.chapter_patterns = chapter_patterns or self.DEFAULT_CHAPTER_PATTERNS
+        self.compiled_patterns = [
+            re.compile(p, re.MULTILINE) for p in self.chapter_patterns
+        ]
+
+    def find_anchors(self, text):
+        """Detects chapter/section markers using compiled regex."""
+        anchors = []
+        for pattern in self.compiled_patterns:
+            for match in pattern.finditer(text):
+                anchors.append((match.start(), match.group()))
+        return sorted(anchors, key=lambda x: x[0])
+
+    def segment_text_by_anchors(self, text, anchors):
+        """Yields labeled text segments (start/end indexes only)."""
+        for i, (start_idx, label) in enumerate(anchors):
+            end_idx = anchors[i + 1][0] if i + 1 < len(anchors) else len(text)
+            yield {"label": label.strip(), "start": start_idx, "end": end_idx}
+
+    def chunk_section(self, text, section):
+        """Yields chunks from a section using start/end indexes with overlap."""
+        label = section["label"]
+        section_text = text[section["start"] : section["end"]]
+        start = 0
+        chunk_num = 1
+        section_len = len(section_text)
+
+        while start < section_len:
+            end = min(start + self.chunk_size, section_len)
+            chunk = section_text[start:end]
+            yield {
+                "parent_label": label,
+                "chunk_id": f"{label}.{chunk_num}",
+                "preview": chunk[:200].strip(),
+                "full_text": chunk.strip(),
+            }
+            start += self.chunk_size - self.overlap
+            chunk_num += 1
+
+    def process(self, text):
+        """Main method to process full text."""
+        anchors = self.find_anchors(text)
+        chapter_titles = [label for _, label in anchors]
+
+        if not anchors:
+            sections = [{"label": "Unlabeled", "start": 0, "end": len(text)}]
+        else:
+            sections = list(self.segment_text_by_anchors(text, anchors))
+
         chunks = []
-        i = 1
-        while i < len(splits):
-            chunk = splits[i] + splits[i+1] if i+1 < len(splits) else splits[i]
-            chunks.append(chunk.strip())
-            i += 2
-        return [c for c in chunks if c.strip()]
+        for section in sections:
+            chunks.extend(self.chunk_section(text, section))
 
-    def split_by_tokens(self, text: str) -> List[str]:
-        words = text.split()
-        chunks = []
-        for i in range(0, len(words), self.max_words):
-            chunk = ' '.join(words[i:i + self.max_words])
-            chunks.append(chunk)
-        return chunks
+        return {
+            "num_chapters": len(anchors),
+            "num_chunks": len(chunks),
+            "chapter_titles": chapter_titles,
+            "chunks": chunks,
+        }
 
-    def chunk(self, text: str, method: str = "chapter") -> List[str]:
-        if method == "chapter":
-            chapters = self.split_by_chapter(text)
-            if len(chapters) > 1:
-                return chapters
-            # fallback to tokens if no chapters found
-        return self.split_by_tokens(text)
 
 class GeminiExtractor:
     """Extracts locations from text chunks using Gemini API."""
@@ -64,51 +106,63 @@ class GeminiExtractor:
         self.api_key = gemini_api_key
         genai.configure(api_key=gemini_api_key)
         self.model = genai.GenerativeModel(GEMINI_VERSION)
-        self.generation_config = genai.types.GenerationConfig(
+        self.generation_config = genai.GenerationConfig(
             temperature=0.1,
             max_output_tokens=4000,
         )
 
     def get_combined_prompt(self, chunk: str) -> str:
         return f"""{MASTER_PROMPT} {chunk}"""
+    
+    def try_extract_locations_from_chunk(self, chunk: str, chunk_index: int, model: str = GEMINI_VERSION) -> List[LocationMention]:
+        prompt = self.get_combined_prompt(chunk)
+        response = self.model.generate_content(
+            prompt,
+            generation_config=self.generation_config
+        )
+        content = response.text.strip()
+        if content.startswith('```json'):
+            content = content[7:-3]
+        elif content.startswith('```'):
+            content = content[3:-3]
+        locations_data = json.loads(content)
+        locations = []
+        for loc_data in locations_data:
+            locations.append(LocationMention(
+                name=loc_data['name'],
+                text_reference=loc_data['text_reference'],
+                confidence=loc_data['confidence'],
+                chunk_index=chunk_index,
+                model_used="Gemini Pro (Free)",
+                scale=loc_data['scale']
+            ))
+        return locations
 
     async def extract_locations_from_chunk(self, chunk: str, chunk_index: int) -> List[LocationMention]:
         try:
-            prompt = self.get_combined_prompt(chunk)
-            response = self.model.generate_content(
-                prompt,
-                generation_config=self.generation_config
-            )
-            content = response.text.strip()
-            if content.startswith('```json'):
-                content = content[7:-3]
-            elif content.startswith('```'):
-                content = content[3:-3]
-            locations_data = json.loads(content)
-            locations = []
-            for loc_data in locations_data:
-                locations.append(LocationMention(
-                    name=loc_data['name'],
-                    text_reference=loc_data['text_reference'],
-                    confidence=loc_data['confidence'],
-                    chunk_index=chunk_index,
-                    model_used="Gemini Pro (Free)",
-                    scale=loc_data['scale']
-                ))
-            return locations
+            output = self.try_extract_locations_from_chunk(chunk, chunk_index)
         except Exception as e:
             print(f"Error with Gemini on chunk {chunk_index}: {e}")
-            return []
+            # try again with a different model
+            try:
+                output = self.try_extract_locations_from_chunk(chunk, chunk_index, model="gemini-2.0-flash")
+            except Exception as e:
+                print(f"Error with Gemini on chunk {chunk_index} with model gemini-2.0-flash: {e}")
+                return []
+        return output
 
     async def process_all_chunks(self, chunks: List[str]) -> List[LocationMention]:
-        all_locations = []
+        tasks = []
         for i, chunk in enumerate(chunks):
-            print(f"Processing chunk {i+1}/{len(chunks)} with Gemini...")
-            locations = await self.extract_locations_from_chunk(chunk, i)
-            all_locations.extend(locations)
-            if i < len(chunks) - 1:
-                await asyncio.sleep(1.1)
-        return all_locations
+            print(f"Creating task for chunk {i+1}/{len(chunks)}...")
+            task = self.extract_locations_from_chunk(chunk, i)
+            tasks.append(task)
+        
+        print("Processing all chunks in parallel...")
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # filter out exceptions, and empty lists
+        results = [result for result in results if not isinstance(result, Exception) and result]
+        return results
 
 class GoogleMapsExtractor:
     """Geocodes locations and creates Google Maps HTML/export."""
@@ -133,51 +187,10 @@ class GoogleMapsExtractor:
                 print(f"⚠️ No geocoding results for {loc.name}")
         return geocoded
 
+# TODO: KML export
     def export_gmaps_list(self, geocoded_locations: List[Dict[str, Any]]) -> str:
         # Export as JSON string (could be CSV/KML as needed)
         return json.dumps(geocoded_locations, indent=2)
-
-    def create_map_html(self, geocoded_locations: List[Dict[str, Any]]) -> str:
-        map_html = """
-        <html>
-        <head>
-            <title>Location Map</title>
-            <script src=\"https://maps.googleapis.com/maps/api/js?key={key}\"></script>
-            <script>
-                function initMap() {{
-                    var map = new google.maps.Map(document.getElementById('map'), {{
-                        zoom: 2,
-                        center: {{lat: 20, lng: 0}}
-                    }});
-                    var bounds = new google.maps.LatLngBounds();
-                    {markers}
-                }}
-            </script>
-        </head>
-        <body onload=\"initMap()\">
-            <div id=\"map\" style=\"height: 600px; width: 100%;\"></div>
-        </body>
-        </html>
-        """.format(
-            key=GOOGLE_MAPS_KEY,
-            markers=''.join(
-                f"var marker{i} = new google.maps.Marker({{position: {{lat: {loc['lat']}, lng: {loc['lng']}}}, map: map, title: '{loc['name']}'}}); bounds.extend(marker{i}.getPosition());"
-                for i, loc in enumerate(geocoded_locations)
-            )
-        )
-        return map_html
-
-class UserInterface:
-    """Displays the Google Maps route and results to the user."""
-    def __init__(self):
-        pass
-
-    def launch_interface(self, map_html: str, locations: List[Dict[str, Any]]):
-        # Save the map HTML to a file
-        with open("map.html", "w") as f:
-            f.write(map_html)
-        print("🌐 Map saved to map.html. Open this file in your browser to view the interactive map.")
-        print("(Note: Gradio cannot display interactive Google Maps. Use your browser for full interactivity.)")
 
 # --- MAIN PIPELINE ---
 
@@ -189,10 +202,7 @@ def extract_and_geocode_locations(chunks: List[str], selected_scales: List[str])
     """
     async def pipeline():
         gemini_extractor = GeminiExtractor(gemini_api_key=GEMINI_API_KEY)
-        all_locations = []
-        for idx, chunk in enumerate(chunks):
-            locs = await gemini_extractor.extract_locations_from_chunk(chunk, idx)
-            all_locations.extend(locs)
+        all_locations = await gemini_extractor.process_all_chunks(chunks)
         # Deduplicate by name (case-insensitive), concatenate text references, keep highest confidence
         deduped = {}
         for loc in all_locations:
