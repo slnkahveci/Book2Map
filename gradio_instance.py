@@ -589,7 +589,6 @@ def chapter_scale_ui():
         custom_prompt_state = gr.State(MASTER_PROMPT)
         selected_model_state = gr.State("gemini-2.5-flash")
 
-        # FIXED: Helper functions with better error handling
         def get_chapter_labels(info):
             """Extract chapter labels safely"""
             labels = []
@@ -617,7 +616,6 @@ def chapter_scale_ui():
                 print(f"Error creating location choices: {e}")
             return choices
 
-        # FIXED: Callback functions with better error handling
         def analyze_callback(text):
             """Analyze text and return chapter info"""
             try:
@@ -843,7 +841,6 @@ def chapter_scale_ui():
             except Exception as e:
                 return gr.update(value=f"**Status:** ❌ Test failed: {str(e)}"), gr.update()
 
-        # FIXED: Event handlers with proper error handling
         convert_btn.click(
             fn=convert_to_text,
             inputs=[doc_input],
@@ -958,6 +955,5 @@ def chapter_scale_ui():
     return demo3
 
 
-# FIXED: Add main execution guard
 if __name__ == "__main__":
     chapter_scale_ui().launch(debug=True, share=False)
