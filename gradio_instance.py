@@ -401,6 +401,10 @@ def chapter_scale_ui():
                         interactive=True,
                     )
 
+                    with gr.Row():
+                        select_all_chapters_btn = gr.Button("Select All Chapters", size="sm")
+                        deselect_all_chapters_btn = gr.Button("Deselect All Chapters", size="sm")
+
                     scale_select = gr.CheckboxGroup(
                         label="Select Scales to Include",
                         choices=[
@@ -658,6 +662,21 @@ def chapter_scale_ui():
             """Deselect all locations"""
             return gr.update(value=[])
 
+        def select_all_chapters(analysis_info):
+            """Select all chapters"""
+            try:
+                if not analysis_info or not analysis_info.get("chunks"):
+                    return gr.update()
+                labels = get_chapter_labels(analysis_info)
+                return gr.update(value=labels)
+            except Exception as e:
+                print(f"Error selecting all chapters: {e}")
+                return gr.update()
+
+        def deselect_all_chapters():
+            """Deselect all chapters"""
+            return gr.update(value=[])
+
         # FIXED: Event handlers with proper error handling
         convert_btn.click(
             fn=convert_to_text,
@@ -724,6 +743,20 @@ def chapter_scale_ui():
         deselect_all_btn.click(
             fn=deselect_all_locations,
             outputs=[locations_visibility],
+            show_progress="minimal",
+        )
+
+        # Chapter selection buttons
+        select_all_chapters_btn.click(
+            fn=select_all_chapters,
+            inputs=[analysis_info_state],
+            outputs=[chapter_select],
+            show_progress="minimal",
+        )
+
+        deselect_all_chapters_btn.click(
+            fn=deselect_all_chapters,
+            outputs=[chapter_select],
             show_progress="minimal",
         )
 

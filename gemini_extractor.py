@@ -191,8 +191,13 @@ class GeminiExtractor:
         print("Processing all chunks in parallel...")
         results = await asyncio.gather(*tasks, return_exceptions=True)
         # filter out exceptions, and empty lists
-        results = [result for result in results if not isinstance(result, Exception) and result]
-        return results
+        all_locations = []
+        for result in results:
+            if isinstance(result, Exception):
+                print(f"Exception in chunk processing: {result}")
+            elif isinstance(result, list):  # result is a list of LocationMention objects
+                all_locations.extend(result)
+        return all_locations
 
 class GoogleMapsExtractor:
     """Geocodes locations and creates Google Maps HTML/export."""
@@ -225,7 +230,7 @@ class GoogleMapsExtractor:
 
 # --- MAIN PIPELINE ---
 
-def extract_and_geocode_locations(chunks: List[str], selected_scales: List[str]) -> List[Dict[str, Any]]:
+def extract_and_geocode_locations(chunks: List[Dict[str, Any]], selected_scales: List[str]) -> List[Dict[str, Any]]:
     """
     Given a list of text chunks and selected scales, extract locations, deduplicate, filter by scale, geocode, and return geocoded location dicts.
     Synchronous wrapper for Gradio UI.
@@ -233,10 +238,13 @@ def extract_and_geocode_locations(chunks: List[str], selected_scales: List[str])
     """
     async def pipeline():
         gemini_extractor = GeminiExtractor(gemini_api_key=GEMINI_API_KEY)
-        all_locations = []
-        for idx, chunk in enumerate(chunks):
-            locs = await gemini_extractor.extract_locations_from_chunk(chunk, idx)
-            all_locations.extend(locs)
+        
+        # Extract full text from chunks for processing
+        chunk_texts = [chunk["full_text"] for chunk in chunks]
+        
+        # Process all chunks in parallel
+        all_locations = await gemini_extractor.process_all_chunks(chunk_texts)
+        
         # Deduplicate by name (case-insensitive), concatenate text references, keep highest confidence
         deduped = {}
         for loc in all_locations:
