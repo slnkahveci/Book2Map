@@ -98,17 +98,20 @@ class TextPreprocessor:
 
 class GeminiExtractor:
     """Extracts locations from text chunks using Gemini API."""
-    def __init__(self, gemini_api_key: str):
+    def __init__(self, gemini_api_key: str, custom_prompt: Optional[str] = None, model_name: str = GEMINI_VERSION):
         self.api_key = gemini_api_key
         genai.configure(api_key=gemini_api_key)
-        self.model = genai.GenerativeModel(GEMINI_VERSION)
+        self.model_name = model_name
+        self.model = genai.GenerativeModel(model_name)
         self.generation_config = genai.GenerationConfig(
             temperature=0.1,
             max_output_tokens=4000,
         )
+        self.custom_prompt = custom_prompt
 
     def get_combined_prompt(self, chunk: str) -> str:
-        return f"""{MASTER_PROMPT} {chunk}"""
+        prompt = self.custom_prompt if self.custom_prompt else MASTER_PROMPT
+        return f"""{prompt} {chunk}"""
     
     def try_extract_locations_from_chunk(self, chunk: str, chunk_index: int, model: str = GEMINI_VERSION) -> List[LocationMention]:
         prompt = self.get_combined_prompt(chunk)
@@ -230,14 +233,14 @@ class GoogleMapsExtractor:
 
 # --- MAIN PIPELINE ---
 
-def extract_and_geocode_locations(chunks: List[Dict[str, Any]], selected_scales: List[str]) -> List[Dict[str, Any]]:
+def extract_and_geocode_locations(chunks: List[Dict[str, Any]], selected_scales: List[str], custom_prompt: Optional[str] = None, model_name: str = GEMINI_VERSION) -> List[Dict[str, Any]]:
     """
     Given a list of text chunks and selected scales, extract locations, deduplicate, filter by scale, geocode, and return geocoded location dicts.
     Synchronous wrapper for Gradio UI.
     Deduplication: same places (by name, case-insensitive) are merged, text references concatenated, and highest confidence kept.
     """
     async def pipeline():
-        gemini_extractor = GeminiExtractor(gemini_api_key=GEMINI_API_KEY)
+        gemini_extractor = GeminiExtractor(gemini_api_key=GEMINI_API_KEY, custom_prompt=custom_prompt, model_name=model_name)
         
         # Extract full text from chunks for processing
         chunk_texts = [chunk["full_text"] for chunk in chunks]

@@ -50,8 +50,3 @@ poetry run python3 gradio_instance.py
 ## Choosing the right model
 I have not used smaller distilled model or NER because they are not as good at understanding context and relationships between entities. And part of my user story is to extract not only explicit mentions of locations, but also implicit ones, like descriptions of places without naming them. This requires a model that can understand the context and relationships between entities, which is why I chose larger model like Gemini.
 
-
-
-
-
-

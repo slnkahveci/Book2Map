@@ -1,6 +1,3 @@
-# --- Enhanced Location Extraction: Two-Tab UI with Auto-Collapse and Hide/Show ---
-# For better PDF support, install additional libraries:
-# pip install pdfplumber PyMuPDF PyPDF2 ebooklib beautifulsoup4
 
 import asyncio
 import plotly.graph_objects as go
@@ -12,6 +9,7 @@ from gemini_extractor import (
     GOOGLE_MAPS_KEY,
     LocationMention,
     extract_and_geocode_locations,
+    MASTER_PROMPT,
 )
 from typing import List
 import nest_asyncio
@@ -99,7 +97,7 @@ def convert_to_text(doc_input):
                     doc = fitz.open(file_path)
                     for page_num in range(len(doc)):
                         page = doc.load_page(page_num)
-                        text = page.get_text()
+                        text = page.get_text("text")
                         if text and text.strip():
                             text_parts.append(text.strip())
                     doc.close()
@@ -354,6 +352,44 @@ def chapter_scale_ui():
             padding: 5px 12px;
             font-size: 0.875rem;
         }
+        
+        /* Prompt editor styling */
+        .gr-textbox[data-testid="textbox"] {
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            font-size: 0.9rem;
+            line-height: 1.4;
+        }
+        
+        /* Status indicator styling */
+        .gr-markdown:has(strong:contains("Prompt:")) {
+            background: #f8f9fa;
+            padding: 8px 12px;
+            border-radius: 6px;
+            border-left: 4px solid #007bff;
+            margin: 10px 0;
+        }
+        
+        /* Test result styling */
+        .gr-json {
+            background: #f8f9fa;
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            padding: 10px;
+        }
+        
+        /* Model selection styling */
+        .gr-dropdown {
+            border-radius: 6px;
+        }
+        
+        /* Model status indicator styling */
+        .gr-markdown:has(strong:contains("Model:")) {
+            background: #f8f9fa;
+            padding: 8px 12px;
+            border-radius: 6px;
+            border-left: 4px solid #28a745;
+            margin: 10px 0;
+        }
         """
     ) as demo3:
 
@@ -423,6 +459,9 @@ def chapter_scale_ui():
                     extract_btn = gr.Button(
                         "🗺️ Extract & Map Locations", variant="primary", size="lg"
                     )
+                    
+                    prompt_status_indicator = gr.Markdown("**Prompt:** Using default prompt")
+                    model_status_indicator = gr.Markdown("**Model:** Using gemini-2.5-flash")
 
             # Tab 2: Results - Map and Table
             with gr.TabItem("🗺️ Step 2: Location Mapping", id="results_tab") as tab2:
@@ -473,10 +512,82 @@ def chapter_scale_ui():
                 """
                 )
 
+            # Tab 3: Prompt Configuration
+            with gr.TabItem("⚙️ Optional: Prompt Configuration", id="prompt_tab") as tab3:
+                gr.Markdown("### Customize the AI Model and Prompt for Location Extraction")
+                
+                with gr.Accordion("🤖 Model Selection", open=True) as model_accordion:
+                    gr.Markdown("""
+                    **Choose the AI Model:**
+                    Select which Gemini model to use for location extraction. Different models may have varying performance and capabilities.
+                    
+                    **Available Models:**
+                    - **gemini-2.5-flash**: Fast and efficient (default)
+                    - **gemini-2.0-flash**: Alternative option
+                    - **gemini-1.5-flash**: Legacy model
+                    """)
+                    
+                    model_select = gr.Dropdown(
+                        label="Select Model",
+                        choices=[
+                            "gemini-2.5-flash",
+                            "gemini-2.0-flash", 
+                            "gemini-1.5-flash"
+                        ],
+                        value="gemini-2.5-flash",
+                        interactive=True,
+                    )
+                    
+                    model_status = gr.Markdown("**Model Status:** Using gemini-2.5-flash")
+                
+                with gr.Accordion("📝 Master Prompt Editor", open=True) as prompt_accordion:
+                    gr.Markdown("""
+                    **About the Master Prompt:**
+                    This prompt instructs the AI model on how to extract locations from your text. 
+                    You can customize it to focus on specific types of locations or adjust the extraction criteria.
+                    
+                    **Key Sections:**
+                    - **EXTRACTION GUIDELINES**: What to extract and what to ignore
+                    - **CONFIDENCE SCORING**: How to rate location confidence (0.0-1.0)
+                    - **OUTPUT REQUIREMENTS**: JSON format specifications
+                    - **EXAMPLES**: Sample inputs and expected outputs
+                    """)
+                    
+                    prompt_editor = gr.Textbox(
+                        label="Master Prompt",
+                        value=MASTER_PROMPT,
+                        lines=25,
+                        placeholder="Enter your custom prompt here...",
+                        interactive=True,
+                    )
+                    
+                    with gr.Row():
+                        save_prompt_btn = gr.Button("💾 Save Prompt", variant="primary")
+                        reset_prompt_btn = gr.Button("🔄 Reset to Default", variant="secondary")
+                        test_prompt_btn = gr.Button("🧪 Test Prompt", variant="secondary")
+                    
+                    prompt_status = gr.Markdown("**Status:** Ready to use default prompt")
+                    
+                    with gr.Accordion("📋 Prompt Testing", open=False) as test_accordion:
+                        gr.Markdown("Test your custom prompt with a sample text:")
+                        
+                        test_text = gr.Textbox(
+                            label="Test Text",
+                            lines=5,
+                            placeholder="Enter a sample text to test your prompt...",
+                            value="I am in Berlin. There's a huge gate in front of me. And there are a bunch of embassies.",
+                        )
+                        
+                        test_result = gr.JSON(
+                            label="Test Result",
+                        )
+
         # State management
         geocoded_locations_state = gr.State([])
         analysis_info_state = gr.State({})
         selected_location_index = gr.State(None)
+        custom_prompt_state = gr.State(MASTER_PROMPT)
+        selected_model_state = gr.State("gemini-2.5-flash")
 
         # FIXED: Helper functions with better error handling
         def get_chapter_labels(info):
@@ -527,7 +638,7 @@ def chapter_scale_ui():
                 print(f"Error in analyze_callback: {e}")
                 return 0, 0, gr.update(choices=[], value=[]), {}, gr.update()
 
-        def extract_callback(text, selected, scales, analysis_info):
+        def extract_callback(text, selected, scales, analysis_info, custom_prompt, selected_model):
             """Extract locations and create map"""
             try:
                 if not selected or not text.strip():
@@ -553,8 +664,9 @@ def chapter_scale_ui():
                 ]
 
                 try:
+                    # Use custom prompt and model if provided, otherwise use defaults
                     geocoded_locations = extract_and_geocode_locations(
-                        selected_chunks, scales
+                        selected_chunks, scales, custom_prompt, selected_model
                     )
                 except Exception as e:
                     print(f"Error extracting locations: {e}")
@@ -677,6 +789,60 @@ def chapter_scale_ui():
             """Deselect all chapters"""
             return gr.update(value=[])
 
+        # Model management functions
+        def update_selected_model(model_name):
+            """Update the selected model"""
+            try:
+                return gr.update(value=f"**Model Status:** Using {model_name}"), model_name, gr.update(value=f"**Model:** Using {model_name}")
+            except Exception as e:
+                return gr.update(value=f"**Model Status:** Error updating model: {str(e)}"), gr.update(), gr.update(value="**Model:** Using gemini-2.5-flash")
+
+        # Prompt management functions
+        def save_custom_prompt(prompt_text):
+            """Save the custom prompt to state"""
+            try:
+                if not prompt_text.strip():
+                    return gr.update(value="**Status:** ❌ Error - Prompt cannot be empty"), gr.update(), gr.update(value="**Prompt:** Using default prompt")
+                
+                return gr.update(value="**Status:** ✅ Custom prompt saved successfully - Will be used for next extraction"), prompt_text, gr.update(value="**Prompt:** Using custom prompt")
+            except Exception as e:
+                return gr.update(value=f"**Status:** ❌ Error saving prompt: {str(e)}"), gr.update(), gr.update(value="**Prompt:** Using default prompt")
+
+        def reset_to_default_prompt():
+            """Reset prompt to default"""
+            try:
+                return gr.update(value=MASTER_PROMPT), gr.update(value="**Status:** ✅ Reset to default prompt"), gr.update(value="**Prompt:** Using default prompt")
+            except Exception as e:
+                return gr.update(), gr.update(value=f"**Status:** ❌ Error resetting prompt: {str(e)}"), gr.update(value="**Prompt:** Using default prompt")
+
+        def test_custom_prompt(prompt_text, test_text, selected_model):
+            """Test the custom prompt with sample text"""
+            try:
+                if not prompt_text.strip() or not test_text.strip():
+                    return gr.update(value="**Status:** ❌ Both prompt and test text are required")
+                
+                # Create a GeminiExtractor with the custom prompt and model
+                from gemini_extractor import GeminiExtractor
+                extractor = GeminiExtractor(GEMINI_API_KEY, custom_prompt=prompt_text, model_name=selected_model)
+                
+                # Test the prompt
+                result = extractor.try_extract_locations_from_chunk(test_text, 0)
+                
+                # Convert LocationMention objects to dictionaries for JSON display
+                result_dicts = []
+                for loc in result:
+                    result_dicts.append({
+                        "name": loc.name,
+                        "text_reference": loc.text_reference,
+                        "confidence": loc.confidence,
+                        "scale": loc.scale,
+                        "model_used": loc.model_used
+                    })
+                
+                return gr.update(value="**Status:** ✅ Test completed successfully"), result_dicts
+            except Exception as e:
+                return gr.update(value=f"**Status:** ❌ Test failed: {str(e)}"), gr.update()
+
         # FIXED: Event handlers with proper error handling
         convert_btn.click(
             fn=convert_to_text,
@@ -700,7 +866,7 @@ def chapter_scale_ui():
 
         extract_btn.click(
             fn=extract_callback,
-            inputs=[text_input, chapter_select, scale_select, analysis_info_state],
+            inputs=[text_input, chapter_select, scale_select, analysis_info_state, custom_prompt_state, selected_model_state],
             outputs=[
                 map_plot,
                 locations_table,
@@ -757,6 +923,35 @@ def chapter_scale_ui():
         deselect_all_chapters_btn.click(
             fn=deselect_all_chapters,
             outputs=[chapter_select],
+            show_progress="minimal",
+        )
+
+        # Prompt tab event handlers
+        save_prompt_btn.click(
+            fn=save_custom_prompt,
+            inputs=[prompt_editor],
+            outputs=[prompt_status, custom_prompt_state, prompt_status_indicator],
+            show_progress="minimal",
+        )
+
+        reset_prompt_btn.click(
+            fn=reset_to_default_prompt,
+            outputs=[prompt_editor, prompt_status, prompt_status_indicator],
+            show_progress="minimal",
+        )
+
+        test_prompt_btn.click(
+            fn=test_custom_prompt,
+            inputs=[prompt_editor, test_text, selected_model_state],
+            outputs=[prompt_status, test_result],
+            show_progress="full",
+        )
+
+        # Model selection event handler
+        model_select.change(
+            fn=update_selected_model,
+            inputs=[model_select],
+            outputs=[model_status, selected_model_state, model_status_indicator],
             show_progress="minimal",
         )
 
