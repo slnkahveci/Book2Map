@@ -27,5 +27,8 @@ python gradio_instance.py
 ```
 
 ## TODOS
-- [ ] Interactive list of locations under the map that allows removing locations from the list and reordering them (drag and drop). Default order should be the order of mentions in the text.
-- [ ] Google Maps export.
+- [x] Interactive list of locations under the map that allows ~~removing~~ hiding locations from the map. ~~and reordering them (drag and drop)~~. Default order should be the order of mentions in the text.
+- [ ] ~~Google Maps export.~~   -> There is no native support for this. I have to do KML export and then import it into Google Maps.
+- [ ] .txt, .pdf, .epub file upload support.
+- [ ] Better chunking with sliding overlapping windows.
+- [ ] MVPv2: Summary of events in each location.
