@@ -25,22 +25,19 @@ class LocationMention:
 
 
 class TextPreprocessor:
-    DEFAULT_CHAPTER_PATTERNS = [
-        r"^Chapter\s+\d+\b",
-        r"^Section\s+\d+\b",
-        r"^Part\s+[IVXLC]+\b",
-        r"^CHAPTER\s+[A-Z]+\b",
-        r"^Prologue\b",
-        r"^Epilogue\b",
-        r"^Introduction\b",
-    ]
 
     def __init__(self, chunk_size=1500, overlap=300, chapter_patterns=None):
         self.chunk_size = chunk_size
         self.overlap = overlap
-        self.chapter_patterns = chapter_patterns or self.DEFAULT_CHAPTER_PATTERNS
+        self.chapter_patterns = chapter_patterns or [
+            r"\bChapter\s+\d+\b",
+            r"\bPart\s+[IVXLC]+\b",
+            r"\bCHAPTER\s+\w+\b",
+            r"\bPrologue\b",
+            r"\bEpilogue\b",
+        ]
         self.compiled_patterns = [
-            re.compile(p, re.MULTILINE) for p in self.chapter_patterns
+            re.compile(p, re.IGNORECASE) for p in self.chapter_patterns
         ]
 
     def find_anchors(self, text):
@@ -214,7 +211,8 @@ class GoogleMapsExtractor:
                     "lat": location["lat"],
                     "lng": location["lng"],
                     "text_reference": loc.text_reference,
-                    "scale": loc.scale
+                    "scale": loc.scale,
+                    "first_mention_order": loc.chunk_index
                 })
             else:
                 print(f"⚠️ No geocoding results for {loc.name}")
@@ -250,6 +248,8 @@ def extract_and_geocode_locations(chunks: List[str], selected_scales: List[str])
                 deduped[key].text_reference += ", " + loc.text_reference
                 # Keep highest confidence
                 deduped[key].confidence = max(deduped[key].confidence, loc.confidence)
+                # Keep earliest chunk index (first mention order)
+                deduped[key].chunk_index = min(deduped[key].chunk_index, loc.chunk_index)
         unique_locations = list(deduped.values())
         # Filter by selected scales
         filtered_locations = [loc for loc in unique_locations if loc.scale in selected_scales]
