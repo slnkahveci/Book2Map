@@ -24,7 +24,6 @@ class LocationMention:
     scale: str
 
 
-
 class TextPreprocessor:
     DEFAULT_CHAPTER_PATTERNS = [
         r"^Chapter\s+\d+\b",
@@ -125,6 +124,30 @@ class GeminiExtractor:
             content = content[7:-3]
         elif content.startswith('```'):
             content = content[3:-3]
+    
+        # Check for incomplete JSON before parsing
+        content = content.strip()
+        if content.startswith('['):
+            # Expected array format - check if properly closed
+            if not content.endswith(']'):
+                print(f"⚠️ Incomplete JSON detected in chunk {chunk_index}, attempting to fix...")
+                print(f"Original content ends with: ...{content[-50:]}")
+                
+                # Try to find the last complete object and close the array
+                # Look for the last complete '}' and add ']' after it
+                last_brace = content.rfind('}')
+                if last_brace != -1:
+                    content = content[:last_brace+1] + ']'
+                    print(f"Fixed content ends with: ...{content[-50:]}")
+                else:
+                    # Fallback: just add closing bracket
+                    content += ']'
+        elif content.startswith('{'):
+            # Single object format - check if properly closed
+            if not content.endswith('}'):
+                print(f"⚠️ Incomplete JSON object detected in chunk {chunk_index}, attempting to fix...")
+                content += '}'
+
         locations_data = json.loads(content)
         locations = []
         for loc_data in locations_data:
@@ -143,12 +166,22 @@ class GeminiExtractor:
             output = self.try_extract_locations_from_chunk(chunk, chunk_index)
         except Exception as e:
             print(f"Error with Gemini on chunk {chunk_index}: {e}")
-            # try again with a different model
+            
+            # Wait a bit before retry (helps with rate limiting)
+            await asyncio.sleep(1)
+            
             try:
-                output = self.try_extract_locations_from_chunk(chunk, chunk_index, model="gemini-2.0-flash")
-            except Exception as e:
-                print(f"Error with Gemini on chunk {chunk_index} with model gemini-2.0-flash: {e}")
-                return []
+                print(f"Retrying chunk {chunk_index} with same model...")
+                output = self.try_extract_locations_from_chunk(chunk, chunk_index)
+            except Exception as e2:
+                print(f"Second attempt failed: {e2}")
+                # try again with a different model
+                try:
+                    print(f"Trying chunk {chunk_index} with different model...")
+                    output = self.try_extract_locations_from_chunk(chunk, chunk_index, model="gemini-2.0-flash")
+                except Exception as e3:
+                    print(f"Error with Gemini on chunk {chunk_index} with model gemini-2.0-flash: {e3}")
+                    return []
         return output
 
     async def process_all_chunks(self, chunks: List[str]) -> List[LocationMention]:
@@ -202,7 +235,10 @@ def extract_and_geocode_locations(chunks: List[str], selected_scales: List[str])
     """
     async def pipeline():
         gemini_extractor = GeminiExtractor(gemini_api_key=GEMINI_API_KEY)
-        all_locations = await gemini_extractor.process_all_chunks(chunks)
+        all_locations = []
+        for idx, chunk in enumerate(chunks):
+            locs = await gemini_extractor.extract_locations_from_chunk(chunk, idx)
+            all_locations.extend(locs)
         # Deduplicate by name (case-insensitive), concatenate text references, keep highest confidence
         deduped = {}
         for loc in all_locations:
